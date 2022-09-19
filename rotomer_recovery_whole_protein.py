@@ -26,7 +26,7 @@ from dataset.mmcif_utils import (
 
 from model.ebm import DimeNetPlusPlusGraph
 
-from bioinfo_dq.utils import GPUManager
+from utils.GPU_Manager import GPUManager
 
 import warnings
 
