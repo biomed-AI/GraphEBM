@@ -9,14 +9,11 @@ import pickle
 import random
 
 import numpy as np
-from sklearn.decomposition import PCA
 from scipy.stats import special_ortho_group
 from torch_geometric.data import Data, Batch
 
-import gemmi
 import torch
 from .constants import test_rotamers, name2symbol
-from .math_utils import rotate_v1_v2
 from .mmcif_utils import (
     compute_dihedral,
     exhaustive_sample,

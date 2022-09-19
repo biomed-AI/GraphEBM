@@ -1,10 +1,8 @@
 import argparse
 import os
-import random
 
 import torch
 import torch_geometric
-import math
 
 import numpy as np
 import torch.multiprocessing as mp
@@ -13,10 +11,8 @@ import os.path as osp
 import torch_geometric.data
 from easydict import EasyDict
 from tqdm import tqdm
-from torch import optim
 import torch.distributed as dist
 from torch.utils.data import DataLoader
-from torch_geometric.nn.acts import swish
 
 from dataset.config import *
 from dataset import MMCIFDataset, collate_fn_transformer, collate_fn_transformer_test

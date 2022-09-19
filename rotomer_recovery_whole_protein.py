@@ -7,7 +7,6 @@ import torch
 
 from tqdm import tqdm
 from torch.utils.data import Dataset
-from torch_geometric.nn import radius_graph
 from torch_geometric.data import Data, Batch
 from torch_geometric.utils import subgraph
 from Bio.PDB.PDBParser import PDBParser
@@ -15,8 +14,6 @@ from Bio.PDB.PDBParser import PDBParser
 from dataset.constants import test_rotamers
 from dataset.mmcif_utils import (
     compute_dihedral,
-    exhaustive_sample,
-    interpolated_sample_normal,
     load_rotamor_library,
     mixture_sample_normal,
     parse_dense_format,

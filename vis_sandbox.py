@@ -12,7 +12,6 @@ imported into a jupyter notebook for further analysis.
 """
 
 import argparse
-import itertools
 import os
 import os.path as osp
 import pickle
@@ -22,7 +21,6 @@ import torch_geometric
 from torch.utils.data import DataLoader
 from torch_geometric.data import Batch, Data
 
-import matplotlib.pyplot as plt
 from scipy.stats import special_ortho_group
 
 import torch
@@ -43,7 +41,7 @@ from dataset.mmcif_utils import (
     rotate_dihedral_fast,
 )
 from model.ebm import RotomerDimeNet, RotomerLdq, RotomerTransformer, DimeNetPlus, DimeNetPlusPlus, DimeNetPlusPlusGraph
-from torch import nn
+
 from tqdm import tqdm
 
 from utils.GPU_Manager import GPUManager, set_rand_seed, setCpu
