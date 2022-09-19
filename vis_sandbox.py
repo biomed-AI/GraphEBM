@@ -29,7 +29,7 @@ import torch
 from dataset.amino_acid_config import kvs
 from dataset.config import MMCIF_PATH
 # from constants import atom_names, residue_names
-from dataset import MMCIFTransformer, collate_fn_transformer_test
+from dataset import MMCIFDataset, collate_fn_transformer_test
 from easydict import EasyDict
 from dataset.mmcif_utils import (
     compute_dihedral,
@@ -46,7 +46,7 @@ from model.ebm import RotomerDimeNet, RotomerLdq, RotomerTransformer, DimeNetPlu
 from torch import nn
 from tqdm import tqdm
 
-from bioinfo_dq.utils import GPUManager, set_rand_seed, setCpu
+from utils.GPU_Manager import GPUManager, set_rand_seed, setCpu
 
 from train import rebatch
 
@@ -529,86 +529,6 @@ def rotamer_trials_transformer(model, FLAGS, test_dataset):
             )
 
 
-def make_tsne(model, FLAGS, node_embed):
-    """
-    grab representations for each of the residues in a pdb
-    """
-    pdb_name = FLAGS.pdb_name
-    pickle_file = MMCIF_PATH + f"/mmCIF/{pdb_name[1:3]}/{pdb_name}.p"
-    (node_embed,) = pickle.load(open(pickle_file, "rb"))
-    par, child, pos, pos_exist, res, chis_valid = parse_dense_format(node_embed)
-    angles = compute_dihedral(par, child, pos, pos_exist)
-
-    all_hiddens = []
-    all_energies = []
-
-    n_rotations = 2
-    so3 = special_ortho_group(3)
-    rot_matrix = so3.rvs(n_rotations)
-    rot_matrix = torch.from_numpy(rot_matrix).float().cuda()
-
-    for idx in range(len(res)):
-        # sort the atoms by how far away they are
-        # sort key is the first atom on the sidechain
-        pos_chosen = pos[idx, 4]
-        close_idx = np.argsort(np.square(node_embed[:, -3:] - pos_chosen).sum(axis=1))
-
-        # Grab the 64 closest atoms
-        node_embed_short = node_embed[close_idx[: FLAGS.max_size]].copy()
-
-        # Normalize each coordinate of node_embed to have x, y, z coordinate to be equal 0
-        node_embed_short[:, -3:] = node_embed_short[:, -3:] - np.mean(
-                node_embed_short[:, -3:], axis=0
-        )
-        node_embed_short = torch.from_numpy(node_embed_short).float().cuda()
-
-        node_embed_short = node_embed_short[None, :, :].repeat(n_rotations, 1, 1)
-        node_embed_short[:, :, -3:] = torch.matmul(node_embed_short[:, :, -3:], rot_matrix)
-
-        # Compute the energies for the n_rotations * batch_size for this window of 64 atoms.
-        # Batch the first two dimensions, then pull them apart aftewrads.
-        # node_embed_short = node_embed_short.reshape(node_embed_short.shape[0] * node_embed_short.shape[1], *node_embed_short.shape[2:])
-
-        energies, hidden = model.forward(node_embed_short, return_hidden=True)  # (12000, 1)
-
-        # all_hiddens.append(hidden.mean(0)) # mean over the rotations
-        all_hiddens.append(hidden[0])  # take first rotation
-        all_energies.append(energies[0])
-
-    surface_core_type = []
-    for idx in range(len(res)):
-        # >16 c-beta neighbors within 10A of its own c-beta (or c-alpha for gly).
-        hacked_pos = np.copy(pos)
-        swap_hacked_pos = np.swapaxes(hacked_pos, 0, 1)  # (20, 59, 3)
-        idxs_to_change = swap_hacked_pos[4] == [0, 0, 0]  # (59, 3)
-        swap_hacked_pos[4][idxs_to_change] = swap_hacked_pos[3][idxs_to_change]
-        hacked_pos_final = np.swapaxes(swap_hacked_pos, 0, 1)
-
-        dist = np.sqrt(
-                np.square(hacked_pos_final[idx: idx + 1, 4] - hacked_pos_final[:, 4]).sum(axis=1)
-        )
-        neighbors = (dist < 10).sum()
-
-        if neighbors >= 24:
-            surface_core_type.append("core")
-        elif neighbors <= 16:
-            surface_core_type.append("surface")
-        else:
-            surface_core_type.append("unlabeled")
-
-    output = {
-        "res": res,
-        "surface_core_type": surface_core_type,
-        "all_hiddens": torch.stack(all_hiddens).cpu().numpy(),
-        "all_energies": torch.stack(all_energies).cpu().numpy(),
-    }
-    # Dump the output
-    output_path = osp.join(FLAGS.outdir, f"{pdb_name}_representations.p")
-    if not osp.exists(FLAGS.outdir):
-        os.makedirs(FLAGS.outdir)
-    pickle.dump(output, open(output_path, "wb"))
-
-
 def new_model(model, FLAGS, pdb_name):
     BATCH_SIZE = 128
     (node_embed,) = pickle.load(open(pdb_name, "rb"))
@@ -785,94 +705,6 @@ def new_model(model, FLAGS, pdb_name):
     pickle.dump(output, open(output_path, "wb"))
 
 
-def pair_model(model, FLAGS, pos_graph):
-    # Generate a dataset where two atoms are very close to each other and everything else is very far
-    # Indices for atoms
-    atom_names = ["X", "C", "N", "O", "S"]
-    residue_names = [
-        "ALA",
-        "ARG",
-        "ASN",
-        "ASP",
-        "CYS",
-        "GLU",
-        "GLN",
-        "GLY",
-        "HIS",
-        "ILE",
-        "LEU",
-        "LYS",
-        "MET",
-        "PHE",
-        "PRO",
-        "SER",
-        "THR",
-        "TRP",
-        "TYR",
-        "VAL",
-    ]
-
-    energies_output_dict = {}
-
-    def make_key(residue_name1, residue_name2, atom_name1, atom_name2):
-        return f"{residue_name1}_{residue_name2}_{atom_name1}_{atom_name2}"
-
-    # Save a copy of the node embed
-    node_embed = pos_graph[0]
-    node_embed_orig = node_embed.clone()
-
-    residue_names_proc = ["ALA", "TYR", "LEU"]
-    atom_names_proc = ["C", "N", "O"]
-    for residue_name1, residue_name2 in itertools.product(residue_names_proc, repeat=2):
-        for atom_name1, atom_name2 in itertools.product(atom_names_proc, repeat=2):
-            eps = []
-            energies = []
-
-            residue_index1 = residue_names.index(residue_name1)
-            residue_index2 = residue_names.index(residue_name2)
-            atom_index1 = atom_names.index(atom_name1)
-            atom_index2 = atom_names.index(atom_name2)
-
-            for i in np.linspace(0.5, 2.5, 400):
-                node_embed = node_embed_orig.clone()
-                node_embed.pos[-2, -3:] = torch.Tensor([1.0, 0.5, 0.5])
-                node_embed.pos[-1, -3:] = torch.Tensor([1.0 + i, 0.5, 0.5])
-                node_embed.x[-1, 0] = residue_index1
-                node_embed.x[-2, 0] = residue_index2
-                node_embed.x[-1, 1] = atom_index1
-                node_embed.x[-2, 1] = atom_index2
-                node_embed.x[-1, 2] = 6  # res_counter
-                node_embed.x[-2, 2] = 6  # res_counter
-
-                # node_embed = np.tile(node_embed[None, :, :], (n_rotations, 1, 1))
-                # node_embed[:, :, -3:] = np.matmul(node_embed[:, :, -3:], rot_matrix_neg)
-                node_embed_feed = node_embed.to(device)
-                node_embed_feed.pos = node_embed_feed.pos - node_embed_feed.pos.mean(dim=1, keepdim=True)
-                energy = model.forward(node_embed_feed)  #
-                # energy = energy.mean()
-
-                eps.append(i * 10)
-                energies.append(energy.item())
-
-            key = make_key(residue_name1, residue_name2, atom_name1, atom_name2)
-            energies_output_dict[key] = (eps, energies)
-
-            # Optionally make plots here -- potentially add conditions to avoid making too many
-            plt.plot(eps, energies)
-            plt.xlabel("Atom Distance")
-            plt.ylabel("Energy")
-            plt.title(
-                    f"{atom_name1}, {atom_name2} distance in {residue_name1}/{residue_name2}"
-            )
-            plt.savefig(
-                    f"distance_plots/{atom_name1}_{atom_name2}_in_{residue_name1}_{residue_name2}_distance.png"
-            )
-            plt.clf()
-
-    output_path = osp.join(FLAGS.outdir, "atom_distances.p")
-    pickle.dump(energies_output_dict, open(output_path, "wb"))
-
-
 def main_single(FLAGS):
     FLAGS_OLD = FLAGS
 
@@ -1026,40 +858,21 @@ def main_single(FLAGS):
     del checkpoint
 
     with torch.no_grad():
-        if FLAGS.task == "pair_atom":
-            train_dataset = MMCIFTransformer(FLAGS, mmcif_path=MMCIF_PATH, split="train")
-            (
-                pos_graph,
-                neg_graph,
-                select_atom_idxs,
-                select_atom_masks,
-                select_chis_valids,
-                select_ancestors,
-            ) = train_dataset[256]
-            pair_model(model, FLAGS, pos_graph)
-        elif FLAGS.task == "pack_rotamer":
-            train_dataset = MMCIFTransformer(FLAGS, mmcif_path=MMCIF_PATH, split="train")
-            node_embed, _, _, _, _, _, = train_dataset[0]
-            pack_rotamer(model, FLAGS, node_embed)
-        elif FLAGS.task == "rotamer_trial":
-            test_dataset = MMCIFTransformer(FLAGS,
-                                            mmcif_path=MMCIF_PATH,
-                                            split="test",
-                                            uniform=False,
-                                            gmm=True if FLAGS.sample_mode == "gmm" else False,
-                                            )
+        if FLAGS.task == "rotamer_trial":
+            test_dataset = MMCIFDataset(FLAGS,
+                                        mmcif_path=MMCIF_PATH,
+                                        split="test",
+                                        uniform=False,
+                                        gmm=True if FLAGS.sample_mode == "gmm" else False,
+                                        )
             rotamer_trials(model, FLAGS, test_dataset)
         elif FLAGS.task == "rotamer_trial_tran":
-            test_dataset = MMCIFTransformer(FLAGS, mmcif_path=MMCIF_PATH, split="test")
+            test_dataset = MMCIFDataset(FLAGS, mmcif_path=MMCIF_PATH, split="test")
             rotamer_trials_transformer(model, FLAGS, test_dataset)
         elif FLAGS.task == "new_model":
-            test_dataset = MMCIFTransformer(FLAGS, mmcif_path=MMCIF_PATH, split="test")
+            test_dataset = MMCIFDataset(FLAGS, mmcif_path=MMCIF_PATH, split="test")
             for pdb_name in test_dataset.files:
                 new_model(model, FLAGS, pdb_name)
-        elif FLAGS.task == "tsne":
-            train_dataset = MMCIFTransformer(FLAGS, mmcif_path=MMCIF_PATH, split="train")
-            node_embed, _, _, _, _, _, = train_dataset[3]
-            make_tsne(model, FLAGS, node_embed)
         else:
             assert False
 

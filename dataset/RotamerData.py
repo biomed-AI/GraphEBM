@@ -96,7 +96,7 @@ def generate_BackBonePDB(seq_id, mmcif_file):
 
 
 
-class MMCIFTransformer(Dataset):
+class MMCIFDataset(Dataset):
     def __init__(
             self,
             FLAGS,

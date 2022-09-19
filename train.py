@@ -1,5 +1,7 @@
 import argparse
 import os
+import random
+
 import torch
 import torch_geometric
 import math
@@ -17,13 +19,12 @@ from torch.utils.data import DataLoader
 from torch_geometric.nn.acts import swish
 
 from dataset.config import *
-from dataset import MMCIFTransformer, collate_fn_transformer, collate_fn_transformer_test
+from dataset import MMCIFDataset, collate_fn_transformer, collate_fn_transformer_test
 from dataset.mmcif_utils import compute_rotamer_score_planar
 from utils import init_distributed_mode, TensorBoardOutputFormat
 from model.ebm import RotomerLdq, RotomerTransformer, RotomerDimeNet, DimeNetPlus, DimeNetPlusPlus, DimeNetPlusPlusGraph
 
-from bioinfo_dq.utils import setCpu, set_rand_seed, GPUManager
-from bioinfo_dq.optimizer import RAdam
+from utils.GPU_Manager import GPUManager, setCpu, set_rand_seed
 
 import torch.multiprocessing
 
@@ -31,7 +32,6 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 
 
 # torch.multiprocessing.set_sharing_strategy('file_descriptor')
-
 
 def add_args(parser):
     #############################
@@ -117,49 +117,6 @@ def add_args(parser):
             "--slurm", default=False, action="store_true", help="run experiments on SLURM?"
     )
 
-    #############################
-    ##### Transformer hyperparameters
-    #############################
-
-    parser.add_argument(
-            "--encoder-layers", default=6, type=int, help="number of transformer layers"
-    )
-    parser.add_argument(
-            "--dropout", default=0.0, type=float, help="dropout of attention weights in transformer"
-    )
-    parser.add_argument(
-            "--relu-dropout", default=0.0, type=float, help="chance of dropping out a relu unit"
-    )
-    parser.add_argument(
-            "--no-encoder-normalize-before",
-            action="store_true",
-            default=False,
-            help="do not normalize outputs before the encoder (transformer only)",
-    )
-    parser.add_argument(
-            "--encoder-attention-heads",
-            default=8,
-            type=int,
-            help="number of attention heads (transformer only)",
-    )
-    parser.add_argument(
-            "--attention-dropout", default=0.0, type=float, help="dropout probability for attention"
-    )
-    parser.add_argument(
-            "--encoder-ffn-embed-dim",
-            default=1024,
-            type=int,
-            help="hidden dimension to use in transformer",
-    )
-    parser.add_argument(
-            "--encoder-embed-dim", default=256, type=int, help="original embed dim of element"
-    )
-    parser.add_argument(
-            "--max-size",
-            default=64,
-            type=str,
-            help="number of nearby atoms to attend" "when predicting energy of rotamer",
-    )
     parser.add_argument(
             "--max-distance",
             default=10,
@@ -177,7 +134,6 @@ def add_args(parser):
             type=int,
             help="number of negative rotamer samples" " per real data sample (1-1 ratio)",
     )
-    parser.add_argument("--l2-norm", default=False, action="store_true", help="norm the energies")
     parser.add_argument(
             "--no-augment",
             default=False,
@@ -562,7 +518,7 @@ def main_single(gpu, FLAGS):
                     rank=rank_idx,
             )
 
-    train_dataset = MMCIFTransformer(
+    train_dataset = MMCIFDataset(
             FLAGS,
             split="train",
             uniform=FLAGS.uniform,
@@ -571,7 +527,7 @@ def main_single(gpu, FLAGS):
             chi_mean=FLAGS.chi_mean,
             mmcif_path=MMCIF_PATH,
     )
-    valid_dataset = MMCIFTransformer(
+    valid_dataset = MMCIFDataset(
             FLAGS,
             split="val",
             uniform=FLAGS.uniform,
@@ -580,7 +536,7 @@ def main_single(gpu, FLAGS):
             chi_mean=FLAGS.chi_mean,
             mmcif_path=MMCIF_PATH,
     )
-    test_dataset = MMCIFTransformer(
+    test_dataset = MMCIFDataset(
             FLAGS,
             split="test",
             uniform=FLAGS.uniform,
@@ -675,7 +631,7 @@ def main_single(gpu, FLAGS):
     if FLAGS.cuda:
         model = model.to(device)
 
-    optimizer = RAdam(model.parameters(), lr=FLAGS.start_lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=FLAGS.start_lr)
 
     if FLAGS.gpus > 1:
         sync_model(model)
