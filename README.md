@@ -83,7 +83,7 @@ You can download it and put it in cachedir/DimeNetPlusPlusGraph3Sample20DistSmoo
 
 ## Citing this work
 
-If you use the code or data associated with this package, please cite:
+If you find the GraphEBM useful, please cite:
 
 ```bibtex
 @article {Liu2022.09.05.506704,
